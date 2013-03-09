@@ -14,7 +14,22 @@
 # If you run the `cake build:parser` command, Jison constructs a parse table
 # from our rules and saves it into `lib/parser.js`.
 
+
+###
+日本語訳
+coffee-scriptのパーサは、jisonを用いてこのファイルを用いて生成されます。
+jisonは末尾からのパーサで、Bisonに似ていてJavaScriptで実装されています。
+[LALR(1), LR(0), SLR(1), and LR(1)] の文法を理解出来ます。(http://en.wikipedia.org/wiki/LR_grammar)
+jisonのパーサを作るために、左側と右側からとるべきアクションをマッチさせます (普通は構文木の生成?)
+パーサが走ると、 これはトークンのストリームを右から左へずらし、以下のシーケンスに対して一致させようと試みます。(http://en.wikipedia.org/wiki/Bottom-up_parsing)
+マッチングがなされると、これは非終端記号と推定し、そこから進めます。
+
+cake build:parser が実行されると、jisonはlib/parser.jsを生成します。
+###
+
+
 # The only dependency is on the **Jison.Parser**.
+# 依存はJison.Parserだけ
 {Parser} = require 'jison'
 
 # Jison DSL
@@ -22,36 +37,92 @@
 
 # Since we're going to be wrapped in a function by Jison in any case, if our
 # action immediately returns a value, we can optimize by removing the function
+
+###
 # wrapper and just returning the value directly.
+# Jisonによる関数でラップさせようとしたどんな場合でも、もしそのアクションが即時に値を返すのならば、
+# 関数のラップを除去することによって最適化します
+###
 unwrap = /^function\s*\(\)\s*\{\s*return\s*([\s\S]*);\s*\}/
+
+###
+coffee> unwrap.test "aa"
+false
+coffee> unwrap.test (->),toString()
+false
+coffee> unwrap.test (->return 'a'),toString()
+true
+coffee> unwrap.test (->'a'),toString()
+true
+###
+
 
 # Our handy DSL for Jison grammar generation, thanks to
 # [Tim Caswell](http://github.com/creationix). For every rule in the grammar,
 # we pass the pattern-defining string, the action to run, and extra options,
 # optionally. If no action is specified, we simply pass the value of the
 # previous nonterminal.
+
+# jisonの簡単なDSL生成関数 by http://github.com/creationix
+# 文法のためのどんなルールでも、文法決定のための文字列や、実行するためのアクションや、他のオプションを選択的に取り入れることができる
+# 何もアクションがなかった場合でも、前の文字を非終端記号として通すだけ
 o = (patternString, action, options) ->
+  # spaceが二個以上あったら一個に圧縮する
   patternString = patternString.replace /\s{2,}/g, ' '
+  # 文中のスペースの数を数える
   patternCount = patternString.split(' ').length
+
+  # アクションが定義されて無ければ [patternString, '$$ = $1;', options] で返す
   return [patternString, '$$ = $1;', options] unless action
+
+  # アクションがunwrapされるパターンなら中の値を、そうでなければ (#{action}())で返す
+  # 関数適用か？
   action = if match = unwrap.exec action then match[1] else "(#{action}())"
 
   # All runtime functions we need are defined on "yy"
+  # どんな実行関数でも yyとして定義することが必要
+
+  # 'new Hoge' を 'new yy.Hoge' に置換
+  # 'new X'.replace /\bnew /g, '$&yy.' => 'new yy.X'
   action = action.replace /\bnew /g, '$&yy.'
+
+  # Block.wrap もしくは extend に yyをつける
   action = action.replace /\b(?:Block\.wrap|extend)\b/g, 'yy.$&'
+  ###
+  coffee> 'Block.wrap'.replace /\b(?:Block\.wrap|extend)\b/g, 'yy.$&'
+  'yy.Block.wrap'
+  coffee> 'extend'.replace /\b(?:Block\.wrap|extend)\b/g, 'yy.$&'
+  'yy.extend'
+  ###
 
   # Returns a function which adds location data to the first parameter passed
   # in, and returns the parameter.  If the parameter is not a node, it will
   # just be passed through unaffected.
+
+  # 最初のパラメータが通過した位置のデータを加え、そのパラメータを返す関数を返す
+  # もしパラメータがnodeではなければ、なにも作用することなく通過する
   addLocationDataFn = (first, last) ->
     if not last
       "yy.addLocationDataFn(@#{first})"
     else
       "yy.addLocationDataFn(@#{first}, @#{last})"
+  # おそらくsourcemap用か？
 
+  # LOC(10) や LOC(10, 20) を yy.addLocationDataFn(@10, @20) みたいな形に変換する
   action = action.replace /LOC\(([0-9]*)\)/g, addLocationDataFn('$1')
   action = action.replace /LOC\(([0-9]*),\s*([0-9]*)\)/g, addLocationDataFn('$1', '$2')
+  ###
+  coffee> (/LOC\(([0-9]*)\)/g).test 'LOC(2222)'
+  true
+  coffee> "LOC(10,20)".replace /LOC\(([0-9]*),\s*([0-9]*)\)/g, addLocationDataFn('$1', $2)
+  'yy.addLocationDataFn(@10, @20)'
+  ###
 
+  ###
+  [0] patternString => Spaceが圧縮された表現
+  [1] yy.addLocationDataFn(1, spaceCount)(new yy.アンラップされた関数)
+  [2] option => そのまま(未加工)
+  ###
   [patternString, "$$ = #{addLocationDataFn(1, patternCount)}(#{action});", options]
 
 # Grammatical Rules
@@ -67,43 +138,86 @@ o = (patternString, action, options) ->
 # `$1` would be the value of the first `Expression`, `$2` would be the token
 # for the `UNLESS` terminal, and `$3` would be the value of the second
 # `Expression`.
+
+
+# 文法ルール
+# -------------------
+
+###
+次に述べるすべてのルールは、別の一致のリストをみつけるキーとして、非終端記号の名前をみつけるものだ(訳しきれず)
+どんな一致するアクションとでも一緒に Jison自身の数の位置として参照されるJisonによって提供されるダラーサイン($) は次のルール
+"Expression UNLESS Expression" に従う。
+
+$1 は最初の表現の値であり、 $2 は UNLESS 終端記号として与えられ、 $3 は 二番目の表現として与えられるだろう。
+###
+
+###
+今はよくわからない。次
+###
+
+# console.log o 'Body'
 grammar =
 
   # The **Root** is the top-level node in the syntax tree. Since we parse bottom-up,
   # all parsing must end here.
+
+  # Root は構文木のトップレベルノード。
+  # 末尾からパースして、すべてのパースは必ず最後で終わる。
   Root: [
     o '',                                       -> new Block
+    # [ '', '$$ = yy.addLocationDataFn(@1, @1)(new yy.Block);', undefined ]
     o 'Body'
+    # [ 'Body', '$$ = $1;', undefined ]
     o 'Block TERMINATOR'
+    # [ 'Block TERMINATOR', '$$ = $1;', undefined ]
   ]
 
   # Any list of statements and expressions, separated by line breaks or semicolons.
+  # どの表現の宣言でも、必ず改行かセミコロンで分割される
   Body: [
     o 'Line',                                   -> Block.wrap [$1]
     o 'Body TERMINATOR Line',                   -> $1.push $3
     o 'Body TERMINATOR'
   ]
+  ###
+  $ coffee grammar.coffee
+  [ [ 'Line',
+      '$$ = yy.addLocationDataFn(@1, @1)(yy.Block.wrap([$1]));',
+      undefined ],
+    [ 'Body TERMINATOR Line',
+      '$$ = yy.addLocationDataFn(@1, @3)($1.push($3));',
+      undefined ],
+    [ 'Body TERMINATOR', '$$ = $1;', undefined ] ]
+  ###
 
   # Block and statements, which make up a line in a body.
+  # Bodyを構成する格行の Block と 宣言
   Line: [
     o 'Expression'
     o 'Statement'
   ]
 
   # Pure statements which cannot be expressions.
+  # expressionであるはずがない純粋なstatement
   Statement: [
     o 'Return'
     o 'Comment'
     o 'STATEMENT',                              -> new Literal $1
+    # [ 'STATEMENT',
+    #   '$$ = yy.addLocationDataFn(@1, @1)(new yy.Literal($1));',
+    #   undefined ] ]
   ]
 
   # All the different types of expressions in our language. The basic unit of
   # CoffeeScript is the **Expression** -- everything that can be an expression
   # is one. Blocks serve as the building blocks of many other rules, making
   # them somewhat circular.
+
+  # coffee-scriptにおいて全く違う表現のタイプ
+  # 基本的な組み合わせは **Expression** がすべてであり、expressionのうちどれか1つを取る(訳しきれなかったので意訳
   Expression: [
     o 'Value'
-    o 'Invocation'
+    o 'Invocation' # 祈り？
     o 'Code'
     o 'Operation'
     o 'Assign'
@@ -122,118 +236,198 @@ grammar =
   Block: [
     o 'INDENT OUTDENT',                         -> new Block
     o 'INDENT Body OUTDENT',                    -> $2
+    # [ 'INDENT Body OUTDENT', '$$ = yy.addLocationDataFn(@1, @3)($2);', undefined ]
   ]
 
   # A literal identifier, a variable name or property.
+  # 変数名やプロパティーのリテラル識別子
   Identifier: [
     o 'IDENTIFIER',                             -> new Literal $1
   ]
 
   # Alphanumerics are separated from the other **Literal** matchers because
   # they can also serve as keys in object literals.
+
+  # 英数字は他の **Literal** のマッチャによって分割される, というのは
+  # それらはオブジェクトリテラルのキーとしても提供されるからである
+  # -- obj.11 みたいなハッシュ値アクセスを指してる？
   AlphaNumeric: [
     o 'NUMBER',                                 -> new Literal $1
+    # 1
     o 'STRING',                                 -> new Literal $1
+    # a
   ]
 
   # All of our immediate values. Generally these can be passed straight
   # through and printed to JavaScript.
+
+  # 即時的な値の全て。普通はJavaScriptとしてそのまま出力される。
   Literal: [
     o 'AlphaNumeric'
+    # -- a or 1
     o 'JS',                                     -> new Literal $1
+    # `console.log('hello')`
     o 'REGEX',                                  -> new Literal $1
+    # /regex/
     o 'DEBUGGER',                               -> new Literal $1
+    # debugger;
     o 'UNDEFINED',                              -> new Undefined
+    # undefined;
     o 'NULL',                                   -> new Null
+    # null
     o 'BOOL',                                   -> new Bool $1
+    # true, false, on, off
   ]
 
   # Assignment of a variable, property, or index to a value.
+  # 変数適用 もしくは 値のインデックス
   Assign: [
     o 'Assignable = Expression',                -> new Assign $1, $3
+    # a = ~~
     o 'Assignable = TERMINATOR Expression',     -> new Assign $1, $4
+    # a =
+    #   for i in [1..10]
+    #     i
     o 'Assignable = INDENT Expression OUTDENT', -> new Assign $1, $4
+    # a =
+    #   val1: 3
+    #   val2: 2
   ]
 
   # Assignment when it happens within an object literal. The difference from
   # the ordinary **Assign** is that these allow numbers and strings as keys.
+
+  # オブジェクトリテラルに対する割り当て。
+  # 普通の割り当てと違うのは、キーとして数字やストリングを受け付ける
+  # -- 11 = 3 はできないけど、 obj.11 = 3 は可能、みたいなこと
   AssignObj: [
     o 'ObjAssignable',                          -> new Value $1
+    # obj: a
     o 'ObjAssignable : Expression',             -> new Assign LOC(1)(new Value($1)), $3, 'object'
+    # obj: 11: 3
     o 'ObjAssignable :
        INDENT Expression OUTDENT',              -> new Assign LOC(1)(new Value($1)), $4, 'object'
+    # obj: a :
+    #   new Object
     o 'Comment'
+    # obj:
+    #   a: 1
+    #   # comment intercept
+    #   b: 2
+    # あまり自信がない
   ]
 
   ObjAssignable: [
     o 'Identifier'
+    # a
     o 'AlphaNumeric'
+    # a or 1
     o 'ThisProperty'
+    # @
   ]
 
   # A return statement from a function body.
+  # 関数の中の リターン宣言
   Return: [
     o 'RETURN Expression',                      -> new Return $2
+    # return a
     o 'RETURN',                                 -> new Return
+    # return
+
   ]
 
   # A block comment.
   Comment: [
     o 'HERECOMMENT',                            -> new Comment $1
+    # triple " comment
   ]
 
   # The **Code** node is the function literal. It's defined by an indented block
   # of **Block** preceded by a function arrow, with an optional parameter
   # list.
+
+  # **Code** ノード は関数リテラルです。 これは function arrow(->のこと)によって指定される **Block**で
+  # インデントされたブロックとして、オプショナルなパラメータと共に定義されます
   Code: [
     o 'PARAM_START ParamList PARAM_END FuncGlyph Block', -> new Code $2, $5, $4
+    # (a) -> a = 1
     o 'FuncGlyph Block',                        -> new Code [], $2, $1
+    # -> a = 1
   ]
 
   # CoffeeScript has two different symbols for functions. `->` is for ordinary
   # functions, and `=>` is for functions bound to the current value of *this*.
+
+  # coffee-scriptは二種類の関数シンボルを持ち、 -> は普通のファンクションで
+  # => は 現在のスコープの _this にバインドされた関数です
   FuncGlyph: [
     o '->',                                     -> 'func'
     o '=>',                                     -> 'boundfunc'
   ]
 
   # An optional, trailing comma.
+  # オプショナルなカンマ
   OptComma: [
     o ''
     o ','
   ]
+  # おそらく Array宣言時にカンマが省けることに対する実装
+  # arr = [
+  #   1
+  #   3
+  # ]
 
   # The list of parameters that a function accepts can be of any length.
+  # どんな長さでも受け入れることが可能な パラメータのリスト
   ParamList: [
     o '',                                       -> []
+    # nop
     o 'Param',                                  -> [$1]
+    # [a]
     o 'ParamList , Param',                      -> $1.concat $3
+    # [a, b, c], [d] => [a,b,c,d]
+    # -- 再帰によって無限長を表現
     o 'ParamList OptComma TERMINATOR Param',    -> $1.concat $4
+    # a, b, c,
+    #   d
     o 'ParamList OptComma INDENT ParamList OptComma OUTDENT', -> $1.concat $4
+    # a, b, c,
+    #   d,
+    # e, f, g
   ]
 
   # A single parameter in a function definition can be ordinary, or a splat
   # that hoovers up the remaining arguments.
+  # 関数のパラメータとして仕様可能な表現
   Param: [
     o 'ParamVar',                               -> new Param $1
+    # f = (a) ->
     o 'ParamVar ...',                           -> new Param $1, null, on
+    # f = (a...) ->
+    # splatsの受け取り
     o 'ParamVar = Expression',                  -> new Param $1, $3
+    # f = (a = 3) ->
+    # デフォルト引数
   ]
 
- # Function Parameters
+  # Function Parameters
+  # 引数として受取可能な値
   ParamVar: [
     o 'Identifier'
     o 'ThisProperty'
     o 'Array'
     o 'Object'
   ]
+  # 略
 
   # A splat that occurs outside of a parameter list.
+  # パラメータリストの外でのsplatの表現
   Splat: [
     o 'Expression ...',                         -> new Splat $1
   ]
 
   # Variables and properties that can be assigned to.
+  # 変数とプロパティにアサイン可能なもの
   SimpleAssignable: [
     o 'Identifier',                             -> new Value $1
     o 'Value Accessor',                         -> $1.add $2
@@ -242,6 +436,7 @@ grammar =
   ]
 
   # Everything that can be assigned to.
+  # 何にでもアサイン可能なもの
   Assignable: [
     o 'SimpleAssignable'
     o 'Array',                                  -> new Value $1
@@ -250,6 +445,9 @@ grammar =
 
   # The types of things that can be treated as values -- assigned to, invoked
   # as functions, indexed into, named as a class, etc.
+
+  # 値型として扱うことが可能なもの
+  # 関数として発動されたり、インデックスされたり、クラス名として定義されたり、その他色々
   Value: [
     o 'Assignable'
     o 'Literal',                                -> new Value $1
@@ -260,125 +458,211 @@ grammar =
 
   # The general group of accessors into an object, by property, by prototype
   # or by array index or slice.
+
+  # 基本的なオブジェクトに対するアクセッサー
   Accessor: [
     o '.  Identifier',                          -> new Access $2
+    # obj.a
     o '?. Identifier',                          -> new Access $2, 'soak'
+    # obj?.maybeExists
     o ':: Identifier',                          -> [LOC(1)(new Access new Literal('prototype')), LOC(2)(new Access $2)]
+    # obj.prototype.a
     o '?:: Identifier',                         -> [LOC(1)(new Access new Literal('prototype'), 'soak'), LOC(2)(new Access $2)]
+    # obj?::a
     o '::',                                     -> new Access new Literal 'prototype'
+    # obj::
     o 'Index'
+    # obj.1
   ]
 
+
   # Indexing into an object or array using bracket notation.
+  # bracket([])でアクセス可能な値
   Index: [
     o 'INDEX_START IndexValue INDEX_END',       -> $2
+    # obj[a]
     o 'INDEX_SOAK  Index',                      -> extend $2, soak : yes
+    # 再起しててちょっとわかりにくい
   ]
 
   IndexValue: [
     o 'Expression',                             -> new Index $1
+    # [1,2,3][a]
     o 'Slice',                                  -> new Slice $1
+    # [1,2,3][1..2]
   ]
 
   # In CoffeeScript, an object literal is simply a list of assignments.
+  # オブジェクトの値リストから値の適用が可能
   Object: [
     o '{ AssignList OptComma }',                -> new Obj $2, $1.generated
+    # {a, b} = obj => a = obj.a; b = obj.b;
   ]
 
   # Assignment of properties within an object literal can be separated by
   # comma, as in JavaScript, or simply by newline.
+
+  # カンマで分割されたオブジェクトリテラルの受取可能リスト
+  # あるいは単に改行
   AssignList: [
     o '',                                                       -> []
+    # []
     o 'AssignObj',                                              -> [$1]
+    # [a]
     o 'AssignList , AssignObj',                                 -> $1.concat $3
+    # [a, b], c 再帰
     o 'AssignList OptComma TERMINATOR AssignObj',               -> $1.concat $4
+    # 改行入り 省略
     o 'AssignList OptComma INDENT AssignList OptComma OUTDENT', -> $1.concat $4
   ]
 
   # Class definitions have optional bodies of prototype property assignments,
   # and optional references to the superclass.
+
+  # クラス定義
   Class: [
     o 'CLASS',                                           -> new Class
+    # class
     o 'CLASS Block',                                     -> new Class null, null, $2
+    # class
+    #   a: ->
     o 'CLASS EXTENDS Expression',                        -> new Class null, $3
+    # class extends SuperClass
     o 'CLASS EXTENDS Expression Block',                  -> new Class null, $3, $4
+    # class extends SuperClass
+    #   a: ->
     o 'CLASS SimpleAssignable',                          -> new Class $2
+    # class A
     o 'CLASS SimpleAssignable Block',                    -> new Class $2, null, $3
+    # class A
+    #   a: ->
     o 'CLASS SimpleAssignable EXTENDS Expression',       -> new Class $2, $4
+    # class A extends B
     o 'CLASS SimpleAssignable EXTENDS Expression Block', -> new Class $2, $4, $5
+    # class A extends B
+    #   a: ->
   ]
 
   # Ordinary function invocation, or a chained series of calls.
+
+  # 順序化された関数発動 もしくは 関数呼び出しのチェイン
   Invocation: [
     o 'Value OptFuncExist Arguments',           -> new Call $1, $3, $2
+    # a ? b
     o 'Invocation OptFuncExist Arguments',      -> new Call $1, $3, $2
+    # a ? b ? c
     o 'SUPER',                                  -> new Call 'super', [new Splat new Literal 'arguments']
+    # super
     o 'SUPER Arguments',                        -> new Call 'super', $2
+    # super (a, b, c)
   ]
 
   # An optional existence check on a function.
+  # オプショナルな関数の存在確認
   OptFuncExist: [
     o '',                                       -> no
+    # f
     o 'FUNC_EXIST',                             -> yes
+    # f?
   ]
 
   # The list of arguments to a function call.
+  # 関数引数
   Arguments: [
     o 'CALL_START CALL_END',                    -> []
+    # ()
     o 'CALL_START ArgList OptComma CALL_END',   -> $2
+    # (a, b, c)  再帰
   ]
 
   # A reference to the *this* current object.
+  # thisの参照
   This: [
     o 'THIS',                                   -> new Value new Literal 'this'
+    # this
     o '@',                                      -> new Value new Literal 'this'
+    # @
   ]
 
   # A reference to a property on *this*.
+  # thisのプロパティ参照
   ThisProperty: [
     o '@ Identifier',                           -> new Value LOC(1)(new Literal('this')), [LOC(2)(new Access($2))], 'this'
+    # @a
   ]
 
   # The array literal.
+  # 配列リテラル
   Array: [
     o '[ ]',                                    -> new Arr []
+    # []
     o '[ ArgList OptComma ]',                   -> new Arr $2
+    # [a ,b
+    #   c
+    # ]
   ]
 
   # Inclusive and exclusive range dots.
   RangeDots: [
     o '..',                                     -> 'inclusive'
+    # 1..10
     o '...',                                    -> 'exclusive'
+    # 0...10
   ]
 
   # The CoffeeScript range literal.
+  # レンジリテラル
   Range: [
     o '[ Expression RangeDots Expression ]',    -> new Range $2, $4, $3
+    # [a .. b]
   ]
 
   # Array slice literals.
+  # 配列をスライスするためのリテラル
   Slice: [
     o 'Expression RangeDots Expression',        -> new Range $1, $3, $2
+    # [1..10][5..8]
     o 'Expression RangeDots',                   -> new Range $1, null, $2
+    # [1..10][5..]
     o 'RangeDots Expression',                   -> new Range null, $2, $1
+    # [1..10][..5]
     o 'RangeDots',                              -> new Range null, null, $1
+    # [1..10][..]
   ]
+  # Rangeは独自の実装がありそうなので追うと独自関数の挟みこみが出来そう
+
 
   # The **ArgList** is both the list of objects passed into a function call,
   # as well as the contents of an array literal
   # (i.e. comma-separated expressions). Newlines work as well.
   ArgList: [
     o 'Arg',                                              -> [$1]
+    # a
     o 'ArgList , Arg',                                    -> $1.concat $3
+    # a, b 再帰
     o 'ArgList OptComma TERMINATOR Arg',                  -> $1.concat $4
+    # a
+    #   b
     o 'INDENT ArgList OptComma OUTDENT',                  -> $2
+    #  f
+    #    a, b, c
+    #
     o 'ArgList OptComma INDENT ArgList OptComma OUTDENT', -> $1.concat $4
+    # 疲れてきたので略
   ]
+
+  # ======================================
+  # ここからfor や when のパースは省略
+  # 疲れてきたし雰囲気掴んだので、あとは適宜読む
+  # ======================================
+
 
   # Valid arguments are Blocks or Splats.
   Arg: [
     o 'Expression'
+    # a
     o 'Splat'
+    # ...
   ]
 
   # Just simple, comma-separated, required arguments (no fancy syntax). We need
@@ -538,39 +822,62 @@ grammar =
   # combine most of these rules into a single generic *Operand OpSymbol Operand*
   # -type rule, but in order to make the precedence binding possible, separate
   # rules are necessary.
+
+  # 1つかそれ以上の対象をとる計算/論理オペレータ
+  # これは他のものより優先される。実際優先ルールはそのページ(どこ？)末尾で決定される
+  # もしそれらのルールのほとんどを単一の遺伝的な *Operand OpSymbol とOperand型で組み合わせるなら
+  # これは短くなるだろうが、実現可能なバインディング優先度を作るために、ルールの分割は必要があった。
+  # -- 上手く訳せない
+
   Operation: [
     o 'UNARY Expression',                       -> new Op $1 , $2
+    # ~ 1
     o '-     Expression',                      (-> new Op '-', $2), prec: 'UNARY'
+    # - 1
     o '+     Expression',                      (-> new Op '+', $2), prec: 'UNARY'
-
+    # + 1
     o '-- SimpleAssignable',                    -> new Op '--', $2
+    # --a
     o '++ SimpleAssignable',                    -> new Op '++', $2
+    # ++a
     o 'SimpleAssignable --',                    -> new Op '--', $1, null, true
+    # a++
     o 'SimpleAssignable ++',                    -> new Op '++', $1, null, true
+    # a--
 
     # [The existential operator](http://jashkenas.github.com/coffee-script/#existence).
     o 'Expression ?',                           -> new Existence $1
+    # null? => false
 
     o 'Expression +  Expression',               -> new Op '+' , $1, $3
+    # a + b
     o 'Expression -  Expression',               -> new Op '-' , $1, $3
+    # a - b
 
     o 'Expression MATH     Expression',         -> new Op $2, $1, $3
     o 'Expression SHIFT    Expression',         -> new Op $2, $1, $3
+    # a << b ビットシフト
     o 'Expression COMPARE  Expression',         -> new Op $2, $1, $3
+    # a < b
     o 'Expression LOGIC    Expression',         -> new Op $2, $1, $3
+    # a and b
     o 'Expression RELATION Expression',         ->
       if $2.charAt(0) is '!'
         new Op($2[1..], $1, $3).invert()
       else
         new Op $2, $1, $3
+    # あとで
 
     o 'SimpleAssignable COMPOUND_ASSIGN
        Expression',                             -> new Assign $1, $3, $2
+    # a = Math.sin()
+
     o 'SimpleAssignable COMPOUND_ASSIGN
        INDENT Expression OUTDENT',              -> new Assign $1, $4, $2
     o 'SimpleAssignable COMPOUND_ASSIGN TERMINATOR
        Expression',                             -> new Assign $1, $4, $2
     o 'SimpleAssignable EXTENDS Expression',    -> new Extends $1, $3
+    # a extends B ほんとに？
   ]
 
 
@@ -579,12 +886,16 @@ grammar =
 
 # Operators at the top of this list have higher precedence than the ones lower
 # down. Following these rules is what makes `2 + 3 * 4` parse as:
+
+# このOperatorsは上に書いてある者から優先的に処理される。次のは 2 + 3 * 4 の例
+
 #
 #     2 + (3 * 4)
 #
 # And not:
 #
 #     (2 + 3) * 4
+
 operators = [
   ['left',      '.', '?.', '::', '?::']
   ['left',      'CALL_START', 'CALL_END']
@@ -611,18 +922,31 @@ operators = [
 # our **Jison.Parser**. We do this by processing all of our rules, recording all
 # terminals (every symbol which does not appear as the name of a rule above)
 # as "tokens".
+
+# 最終的に grammar と operators を持っていて、パーサを作ることができる。
+# coffee-scriptはこのルールにしたがって処理することが出来、すべての終端記号(このルールに現れない名前のどのシンボルも)はtokensとして記録される
+
 tokens = []
 for name, alternatives of grammar
-  grammar[name] = for alt in alternatives
-    for token in alt[0].split ' '
-      tokens.push token unless grammar[token]
-    alt[1] = "return #{alt[1]}" if name is 'Root'
-    alt
+  grammar[name] =
+    for alt in alternatives
+      # FORIN Expression WHEN Expression のような表現から
+      # grammarのプロパティに存在しないものはtokenとして登録
+      for token in alt[0].split ' '
+        tokens.push token unless grammar[token]
+      # Rootのとき alt1 にreturnを挿入
+      # -- なんでなのかよくわからないので後で
+      alt[1] = "return #{alt[1]}" if name is 'Root'
+      alt
 
 # Initialize the **Parser** with our list of terminal **tokens**, our **grammar**
 # rules, and the name of the root. Reverse the operators because Jison orders
 # precedence from low to high, and we have it high to low
 # (as in [Yacc](http://dinosaur.compilertools.net/yacc/index.html)).
+
+# tokensを使って初期化する
+# Operatorsはjisonのルールに則って順序を逆転させる
+
 exports.parser = new Parser
   tokens      : tokens.join ' '
   bnf         : grammar

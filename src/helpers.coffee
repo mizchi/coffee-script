@@ -63,6 +63,8 @@ exports.del = (obj, key) ->
   val
 
 # Gets the last item of an array(-like) object.
+# arrayを逆からindexで取得
+# back = null の方がいいのでは？
 exports.last = last = (array, back) -> array[array.length - (back or 0) - 1]
 
 # Typical Array::some

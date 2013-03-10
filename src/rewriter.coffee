@@ -5,7 +5,15 @@
 # shorthand into the unambiguous long form, add implicit indentation and
 # parentheses, and generally clean things up.
 
+# CoffeeScriptは暗黙的でshorthandな、オプショナルな良い特長を持つ構文を持っている。
+# これはとても複雑な文法で、パーステーブルを巨大化させる。
+# パーサーがそれ自身全てを作る代わりに、Rewriterを使ってトークンのストリームを作り、
+# shorthandなものを明白で長い形態に変換し、暗黙的なインデントと括弧を追加し、
+# 色んな物を綺麗にする
+
+
 # Create a generated token: one that exists due to a use of implicit syntax.
+# 暗黙的なシンタックスのトークンを作るよ
 generate = (tag, value) ->
     tok = [tag, value]
     tok.generated = yes

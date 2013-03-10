@@ -9,6 +9,7 @@
 # format that can be fed directly into [Jison](http://github.com/zaach/jison).  These
 # are read by jison in the `parser.lexer` function defined in coffee-script.coffee.
 
+
 {Rewriter, INVERSES} = require './rewriter'
 
 # Import the helpers we need.
@@ -34,43 +35,79 @@ exports.Lexer = class Lexer
   # Before returning the token stream, run it through the [Rewriter](rewriter.html)
   # unless explicitly asked not to.
   tokenize: (code, opts = {}) ->
+    # literate-mode かどうかのフラグ
     @literate = opts.literate  # Are we lexing literate CoffeeScript?
+    # 現在のインデントレベル
     @indent   = 0              # The current indentation level.
+    # インデントが無視されたブロックの中での現在のインデントレベル？
+    # おそらく """　や ### や [ ] の宣言の中でインデントを無視する構文からの回復で使われる
     @indebt   = 0              # The over-indentation at the current level.
+    # インデントが無視されたブロックで、いくつ無視しているか
     @outdebt  = 0              # The under-outdentation at the current level.
     @indents  = []             # The stack of all current indentation levels.
+    # 現在のインデント階層
     @ends     = []             # The stack for pairing up tokens.
+    # 現在の括弧()の深さ？
     @tokens   = []             # Stream of parsed tokens in the form `['TYPE', value, line]`.
+    # Tokenのストリーム
 
+    # 現在チャンクの開始列の深さ
     @chunkLine =
         opts.line or 0         # The start line for the current @chunk.
+
+    # 現在チャンクの開始行
     @chunkColumn =
         opts.column or 0       # The start column of the current @chunk.
+
+    # 末尾スペースを消したりliterateなmarkdownを消して下準備
     code = @clean code         # The stripped, cleaned original source code.
 
     # At every position, run through this list of attempted matches,
     # short-circuiting if any of them succeed. Their order determines precedence:
     # `@literalToken` is the fallback catch-all.
+
+    # どの位置でも、これらのマッチを試みるリストから走らせ、もしどれかが成功すれば(??)
+    # これらの順番は優先度を決める: @literaToken は なんでもキャッチする
     i = 0
+
+    # -- code [i..]は「カーソルi以降の全部の文字列」ぐらいの意味
+    # -- リテラルを探しながらそのリテラルをトークンストリームに追加し、
+    # -- tokenの文字列長だけカーソルを進める
+    # 空文字になったら終了
     while @chunk = code[i..]
+      # consumed = そのリテラルが使う文字列長
       consumed = \
+           # 識別子
            @identifierToken() or
+           # コメント
            @commentToken()    or
+           # 空白
            @whitespaceToken() or
+           # 行
            @lineToken()       or
+           # heredoc
            @heredocToken()    or
+           # 文字列
            @stringToken()     or
+           # 数字
            @numberToken()     or
+           # 正規表現
            @regexToken()      or
+           # raw js
            @jsToken()         or
+           # リテラル(その他)
            @literalToken()
 
       # Update position
+      # 現在の行と列をconsumedだけすすめて更新
       [@chunkLine, @chunkColumn] = @getLineAndColumnFromChunk consumed
 
+      # カーソルを追加
       i += consumed
 
+    # 現在のインデント文を閉じて終わり
     @closeIndentation()
+
     @error "missing #{tag}" if tag = @ends.pop()
     return @tokens if opts.rewrite is off
     (new Rewriter).rewrite @tokens
@@ -78,6 +115,9 @@ exports.Lexer = class Lexer
   # Preprocess the code to remove leading and trailing whitespace, carriage
   # returns, etc. If we're lexing literate CoffeeScript, strip external Markdown
   # by removing all lines that aren't indented by at least four spaces or a tab.
+
+  # 末尾スペースの除去や重複したreturnの除去などを行う。
+  # literate coffeescript モードでは、外部のmarkdownをインデントレベル最低4space か tab によって除去する
   clean: (code) ->
     code = code.slice(1) if code.charCodeAt(0) is BOM
     code = code.replace(/\r/g, '').replace TRAILING_SPACES, ''
@@ -96,52 +136,115 @@ exports.Lexer = class Lexer
   # allowed in JavaScript, we're careful not to tag them as keywords when
   # referenced as property names here, so you can still do `jQuery.is()` even
   # though `is` means `===` otherwise.
+
+  # 変数、キーワード、メソッド名、その他の識別子リテラルにマッチする。
+  # 識別子として使うことができないJavaScriptの予約語に引っかからないか確認する。
+  # CoffeeScriptはJavaScriptの中で便利なキーワードを予約しているので、
+  # プロパティとしてここで変数名を参照にするときに、キーワードとしてタグをつけないように気をつける
+  # そうすることで、たとえ is が === であっても、jQuery.is() を使うことができる。
+
   identifierToken: ->
+    # 識別子に引っかからなかったら 0
     return 0 unless match = IDENTIFIER.exec @chunk
     [input, id, colon] = match
+    # このフォーマットでうまく正規表現からパラメタがうまくとれない…　どんなとき？
 
     # Preserve length of id for location data
+    # location data の配列長を事前予約?
     idLength = id.length
+
+    # 否定演算子でtokenをpopさせたときなどに使用 (用途はまだ不明)
     poppedToken = undefined
 
+    # id が自分自身でかつ tagが'FOR'ステートメントの場合
+    # @tag() は引数なしの場合ストリームの先頭を指す
     if id is 'own' and @tag() is 'FOR'
+      # [OWN,own] の tokenをつくってownの文字列長(3)を返す
       @token 'OWN', id
       return id.length
+    # コロンが存在する、または　直前のtokenが存在し、かつprev.tagが ['.', '?.', '::', '?::']に含まれる場合
+    # または spacedではなく、直前のtagが this の場合、強制的に識別子にするフラグを立てる
     forcedIdentifier = colon or
       (prev = last @tokens) and (prev[0] in ['.', '?.', '::', '?::'] or
       not prev.spaced and prev[0] is '@')
+
+    # 識別子
+    # -- 次のifステートメントではすぐtagを書き換えるので、意味スコープ的にはもうちょっと下
     tag = 'IDENTIFIER'
 
+    # 強制識別子ではなく、id が jsかcoffeeの予約語に含まれてる場合、
+    # -- つまりは文法リテラル
     if not forcedIdentifier and (id in JS_KEYWORDS or id in COFFEE_KEYWORDS)
+      # tag は idをアッパケースにしたもの
+      # if -> IF,  for -> For
       tag = id.toUpperCase()
+
+      # 現在タグが WHEN かつ 最後の行が次のものに含まれる
+      # LINE_BREAK = ['INDENT', 'OUTDENT', 'TERMINATOR']
+      # その場合、LEADING_WHEN で 条件文が来ることを予測する
       if tag is 'WHEN' and @tag() in LINE_BREAK
         tag = 'LEADING_WHEN'
+
+      # tagがFOR の場合、@seenFor = yes でfor文を読むモードに入る
       else if tag is 'FOR'
         @seenFor = yes
+
+      # tagがUNLESSの場合、if にする
+      # 条件判定は別の箇所でやるのか？
       else if tag is 'UNLESS'
         tag = 'IF'
+
+      # tag が UNARY ['!', '~', 'NEW', 'TYPEOF', 'DELETE', 'DO'] に含まれる
       else if tag in UNARY
         tag = 'UNARY'
+
+      # tagがRELATION識別子['IN', 'OF', 'INSTANCEOF']に含まれる場合
       else if tag in RELATION
+        # 今現在forステートメントでありかつ, IN OF のどちらかならば
+        # TAGは FORIN , FOROFを返し、forステートメントを解除する
+        # -- for i in
         if tag isnt 'INSTANCEOF' and @seenFor
           tag = 'FOR' + tag
           @seenFor = no
+
+        # イテレーションの表現でない場合
+        # tag はRELATIONとし,
+        # 現在の値が !(否定演算子) の場合、poppedToken に最後の状態を入れて、id は !idとする
         else
           tag = 'RELATION'
           if @value() is '!'
             poppedToken = @tokens.pop()
             id = '!' + id
 
+    # id が JSで使用することを禁じられている場合
+    # たぶん将来のための予約後(ES.next)
     if id in JS_FORBIDDEN
+      # 強制識別子ならトークンを生成
+      # -- ES上で禁止されている用語でも、CoffeeScript上でパース出来れば問題ないというスタンスか
       if forcedIdentifier
         tag = 'IDENTIFIER'
         id  = new String id
         id.reserved = yes
+      # CoffeeScriptで使えない予約語は例外
+      # - function とか 継承のための __extend とか
       else if id in RESERVED
         @error "reserved word \"#{id}\""
 
+    # 強制識別子でない場合
     unless forcedIdentifier
+      # id にエイリアスが登録されている場合、それを使う
+      # COFFEE_ALIAS_MAP =
+      #   and  : '&&'
+      #   or   : '||'
+      #   is   : '=='
+      #   isnt : '!='
+      #   not  : '!'
+      #   yes  : 'true'
+      #   no   : 'false'
+      #   on   : 'true'
+      #   off  : 'false'
       id  = COFFEE_ALIAS_MAP[id] if id in COFFEE_ALIASES
+      # tagの分類は id実体次第
       tag = switch id
         when '!'                 then 'UNARY'
         when '==', '!='          then 'COMPARE'
@@ -150,36 +253,53 @@ exports.Lexer = class Lexer
         when 'break', 'continue' then 'STATEMENT'
         else  tag
 
+    # tokenを追加しつつ取得
     tagToken = @token tag, id, 0, idLength
+    # 値がpopしていた場合、tagTokenの位置はpoppedTokenのものにあわせる
+    # -- 理由がわからない あとで
     if poppedToken
       [tagToken[2].first_line, tagToken[2].first_column] =
         [poppedToken[2].first_line, poppedToken[2].first_column]
+    # : がある場合 : tokenをつくる
     if colon
       colonOffset = input.lastIndexOf ':'
       @token ':', ':', colonOffset, colon.length
 
+    # 入力された文字の文字列長を返す
     input.length
 
   # Matches numbers, including decimals, hex, and exponential notation.
   # Be careful not to interfere with ranges-in-progress.
+
+  # 数字トークン
+  # hexとかにも対応
+  # range-in-proglressを邪魔しないよう気をつけろ
   numberToken: ->
     return 0 unless match = NUMBER.exec @chunk
     number = match[0]
+    # 0X は例外
     if /^0[BOX]/.test number
       @error "radix prefix '#{number}' must be lowercase"
+    # 0xを含まない場合例外
     else if /E/.test(number) and not /^0x/.test number
       @error "exponential notation '#{number}' must be indicated with a lowercase 'e'"
     else if /^0\d*[89]/.test number
       @error "decimal literal '#{number}' must not be prefixed with '0'"
     else if /^0\d+/.test number
       @error "octal literal '#{number}' must be prefixed with '0o'"
+    # 数字リテラルの構文上の長さ
     lexedLength = number.length
+    # 32進数
     if octalLiteral = /^0o([0-7]+)/.exec number
       number = '0x' + (parseInt octalLiteral[1], 8).toString 16
+    # 2進数
     if binaryLiteral = /^0b([01]+)/.exec number
       number = '0x' + (parseInt binaryLiteral[1], 2).toString 16
     @token 'NUMBER', number, 0, lexedLength
     lexedLength
+  # ====================
+  # 疲れたのであとは適宜読む
+  # =================
 
   # Matches strings, including multi-line strings. Ensures that quotation marks
   # are balanced within the string's contents, and within nested interpolations.
@@ -334,27 +454,48 @@ exports.Lexer = class Lexer
 
   # Record an outdent token or multiple tokens, if we happen to be moving back
   # inwards past several recorded indents.
+
+  # もしいくつかの内部で記録されたインデントを遡る時
+  # outdent token や その他複数のトークンを記録する
   outdentToken: (moveOut, noNewlines, outdentLength) ->
     while moveOut > 0
+      # 現在のインデントブロックの深さ
       len = @indents.length - 1
+
+      # もしindents[len] の実体がない場合、moveOutを0に
       if @indents[len] is undefined
         moveOut = 0
+      # 現在のoutdebtがインデントと一致する時, outdebtを0にする
       else if @indents[len] is @outdebt
         moveOut -= @outdebt
         @outdebt = 0
+      # 現在のoutdebtがインデントより大きい時, outdebtとmoveOutを減らす
+      #     a = [
+      #     1
+      #     1
+      #     1
+      #   ]
+      # outdebtってこんなやつの前借りindentってこと？
       else if @indents[len] < @outdebt
         @outdebt -= @indents[len]
         moveOut  -= @indents[len]
       else
+        # 文字幅はインデント幅とoutdebt量
         dent = @indents.pop() + @outdebt
         moveOut -= dent
         @outdebt = 0
         @pair 'OUTDENT'
         @token 'OUTDENT', dent, 0, outdentLength
+
+    # 文字幅文outdebtを減らす
     @outdebt -= moveOut if dent
+    # 末尾セミコロンの除去
+    # -- 　末尾セミコロンが挟まってもブロックは解除されない?
     @tokens.pop() while @value() is ';'
 
+    # 現在トークンが終端文字でない、あるいは no;NewLineでないならば、終端トークンを追加
     @token 'TERMINATOR', '\n', outdentLength, 0 unless @tag() is 'TERMINATOR' or noNewlines
+
     this
 
   # Matches and consumes non-meaningful whitespace. Tag the previous token
@@ -616,6 +757,10 @@ exports.Lexer = class Lexer
   # Returns the line and column number from an offset into the current chunk.
   #
   # `offset` is a number of characters into @chunk.
+
+  # ヘルパ
+  # 現在のチャンクのoffsetから行と列を返す
+  # offset は チャンクに対する文字列の数である
   getLineAndColumnFromChunk: (offset) ->
     if offset is 0
       return [@chunkLine, @chunkColumn]
@@ -638,13 +783,20 @@ exports.Lexer = class Lexer
 
   # Same as "token", exception this just returns the token without adding it
   # to the results.
+
+  # token と同様だが、これは単に tokenを追加することなくtokenを生成するだけ
   makeToken: (tag, value, offsetInChunk = 0, length = value.length) ->
     locationData = {}
+    # 開始行、列を取得
     [locationData.first_line, locationData.first_column] =
       @getLineAndColumnFromChunk offsetInChunk
 
     # Use length - 1 for the final offset - we're supplying the last_line and the last_column,
     # so if last_column == first_column, then we're looking at a character of length 1.
+
+    # 最後のオフセットのために length - 1 を使う
+    # 私たちは最後の行と列を提供している。
+    # なので 最終行と開始行が一緒なら、私たちは length 1 の文字列を探す
     lastCharacter = Math.max 0, length - 1
     [locationData.last_line, locationData.last_column] =
       @getLineAndColumnFromChunk offsetInChunk + (lastCharacter)
@@ -659,16 +811,25 @@ exports.Lexer = class Lexer
   # not specified, the length of `value` will be used.
   #
   # Returns the new token.
+
+  # トークンを探してストリームに追加し、そのトークンを返す
   token: (tag, value, offsetInChunk, length) ->
     token = @makeToken tag, value, offsetInChunk, length
     @tokens.push token
     token
 
   # Peek at a tag in the current token stream.
+  # 現在のトークンストリームのタグを覗く
+  # 説明が不適切のように思える。第二引数がある場合はset
   tag: (index, tag) ->
-    (tok = last @tokens, index) and if tag then tok[0] = tag else tok[0]
+    # tok は 何も指定しなければ先頭のtokenを指す
+    # tagが指定されていれば tagを更新する。そうでなければそのままtagを取得
+    # 要はjQuery#text みたいな get系とset系の同居
+    # token : [tag, value, locationData]
+    (tok = last @tokens, index) and (if tag then (tok[0] = tag) else tok[0])
 
   # Peek at a value in the current token stream.
+  # 上記のtag関数のtoken第二匹数のvalue版
   value: (index, val) ->
     (tok = last @tokens, index) and if val then tok[1] = val else tok[1]
 
@@ -728,6 +889,9 @@ COFFEE_KEYWORDS = COFFEE_KEYWORDS.concat COFFEE_ALIASES
 # The list of keywords that are reserved by JavaScript, but not used, or are
 # used by CoffeeScript internally. We throw an error when these are encountered,
 # to avoid having a JavaScript error at runtime.
+
+# JavaScriptで予約されていて、CoffeeScriptで内部的に使われているもの
+# JavaScriptのランタイムエラーを避けるためにこれらのキーワードをみつけると例外を投げる
 RESERVED = [
   'case', 'default', 'function', 'var', 'void', 'with', 'const', 'let', 'enum'
   'export', 'import', 'native', '__hasProp', '__extends', '__slice', '__bind'
@@ -748,6 +912,7 @@ exports.STRICT_PROSCRIBED = STRICT_PROSCRIBED
 BOM = 65279
 
 # Token matching regexes.
+# トークンにマッチする正規表現
 IDENTIFIER = /// ^
   ( [$A-Za-z_\x7f-\uffff][$\w\x7f-\uffff]* )
   ( [^\n\S]* : (?!:) )?  # Is this a property name?
